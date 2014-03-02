@@ -2,100 +2,111 @@ import hashlib
 import hmac
 
 from Crypto.Cipher import AES
-from Crypto.Random.random import randrange, long_to_bytes, bytes_to_long
-from Crypto.Util import Counter
+from Crypto.Random.random import randrange
 
-from pycoin.encoding import a2b_base58, b2a_hashed_base58, hash160
-from pycoin.ecdsa import (
-    Point, public_pair_for_x, generator_secp256k1 as BasePoint)
+from pycoin.encoding import (
+    public_pair_to_bitcoin_address, public_pair_to_sec,
+    sec_to_public_pair, secret_exponent_to_wif)
 
-
-def make_cipher(h):
-    """Initialize an AES cipher for encrypting/decrypting"""
-    return AES.new(h, AES.MODE_CTR, counter=Counter.new(128, initial_value=0))
-
-
-def kdf(p1,p2):
-    return hashlib.sha512(to_bytes(p1) + to_bytes(p2)).digest()
-
-
-def to_bytes(p):
-    # encode the point into 34 bytes
-    x, parity = p.x(), p.y() % 2
-    return long_to_bytes(parity, 2) + long_to_bytes(x, 32)
-
-
-def valid(point):
-    p, a, b = point.curve().p(), point.curve().a(), point.curve().b()
-    x, y = point.x(), point.y()
-
-    # y^2 = x^3 + ax + b mod m is true
-    return (y ** 2) % p == (x ** 3 + a * x + b) % p
+from pycoin.ecdsa import Point, generator_secp256k1 as BasePoint
 
 
 class PubKey(Point):
-    def address(self, prefix="\x00"):
-        binary = long_to_bytes(self.x()) + long_to_bytes(self.y())
-        return b2a_hashed_base58(prefix + hash160("\x04" + binary))
+    """Represents the public key. Subclasses the pycoin.ecdsa's Point
+    and adds several useful methods
+    """
+    def address(self):
+        """Returns the well-known base58 bitcoin address for this PubKey"""
+        return public_pair_to_bitcoin_address((self.x(), self.y()))
 
-    def encrypt(self, s, mac=8):
+    def encrypt(self, s, mac=16):
         """Encrypt a message for private viewing by the holder of the
         Private Key
         """
+        # nonce is essentially a secret on the encrypter's side
+        # this is a secret exponent < 2^256
         nonce = randrange(1, self.curve().p())
-        nonce_point = BasePoint * nonce
-        shared_secret = self * nonce
-        key = kdf(nonce_point, shared_secret)
-        header = to_bytes(nonce_point)
-        cipher = make_cipher(key[:32])
+        tmp = BasePoint * nonce
+        nonce_point = PubKey(tmp.curve(), tmp.x(), tmp.y())
+        tmp = self * nonce
+        shared_secret = PubKey(tmp.curve(), tmp.x(), tmp.y())
+
+        # derive a key for making a cipher and checksum using the
+        # nonce point and shared secret
+        key = nonce_point.kdf(shared_secret)
+
+        # encode the nonce point into the message as the beginning
+        header = nonce_point.sec()
+
+        # encrypt the actual message using the AES cipher
+        cipher = AES.new(key[:32])
+        # because we're using AES block mode, we need multiples of 16
+        s = s + '\x00' * (16 - len(s) % 16)
         message = cipher.encrypt(s)
+
+        # add a checksum for validation
         checksum_maker = hmac.new(key[32:], digestmod=hashlib.sha256)
         checksum_maker.update(message)
         checksum = checksum_maker.digest()[:mac]
         return header + message + checksum
 
+    def kdf(self, another_p):
+        """Simple Key-Derivative Function given two numbers"""
+        return hashlib.sha512(self.sec() + another_p.sec()).digest()
+
+    def sec(self):
+        """Take a point on the curve and encode it into sec format (33 bytes)
+        """
+        return public_pair_to_sec((self.x(), self.y()))
+
+    def __repr__(self):
+        return self.address()
+
 
 class PrivKey:
+    """Represents the private key (secret exponent) for Elliptical Curve
+    Cryptography
+    """
     def __init__(self, exponent):
         self.exponent = exponent
-        self.pubkey = BasePoint * exponent
+        point = BasePoint * exponent
+        self.pubkey = PubKey(point.curve(), point.x(), point.y())
 
-    def b58(self, prefix="\x80"):
-        return b2a_hashed_base58(prefix + long_to_bytes(self.exponent, 32))
+    def wif(self, compressed=True):
+        """Return the base58 representation (WIF format) for the private
+        key
+        """
+        return secret_exponent_to_wif(self.exponent)
 
-    def decrypt(self, raw, mac=8):
+    def decrypt(self, raw, mac=16):
         """Decrypt a message sent to the holder of this key.
         """
-        parity = bytes_to_long(raw[0:2])
-        header = raw[2:34]
-        message = raw[34:-mac]
+        # get the nonce-point
+        x, y = sec_to_public_pair(raw[:33])
+        # validation that this point lies on the curve happens in
+        #  initialization
+        nonce_point = PubKey(BasePoint.curve(), x, y)
+
+        # message gives us the ciphered message
+        message = raw[33:-mac]
+        # checksum makes sure everything is transmitted properly
         checksum = raw[-mac:]
-        x, y = public_pair_for_x(BasePoint, bytes_to_long(header), not parity)
-        nonce_point = Point(BasePoint.curve(),x,y)
-        assert valid(nonce_point)
-        shared_secret = nonce_point * self.exponent
-        key = kdf(nonce_point, shared_secret)
-        cipher = make_cipher(key[:32])
+
+        # calculate the shared secret
+        tmp = nonce_point * self.exponent
+        shared_secret = PubKey(tmp.curve(), tmp.x(), tmp.y())
+
+        # derive keys
+        key = nonce_point.kdf(shared_secret)
+        cipher = AES.new(key[:32])
+
         # verify the checksum
         checksum_maker = hmac.new(key[32:], digestmod=hashlib.sha256)
         checksum_maker.update(message)
         if checksum_maker.digest()[:mac] != checksum:
-            raise Exception
+            raise RuntimeError("Invalid checksum on encoded message string")
 
         return cipher.decrypt(message)
 
-def base58_to_privkey(b58):
-    # the first byte is the identifier and the last 4 is the checksum
-    e = bytes_to_long(a2b_base58(b58)[1:-4])
-    return PrivKey(e)
-
-def pubhex_to_pubkey(h):
-    s = h.decode('hex')
-    if s[0] != '\x04':
-        raise Exception("invalid public hex")
-    s = s[1:]
-    x = bytes_to_long(s[:32])
-    y = bytes_to_long(s[32:])
-    return PubKey(BasePoint.curve(),x,y)
-
-
+    def __repr__(self):
+        return self.wif()
