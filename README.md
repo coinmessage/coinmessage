@@ -18,13 +18,12 @@ Let e = secret exponent and p = g ^ e, where g is the base point for the ellipti
 Usage
 -----------
 
-Note the address needs to have spent money in order to be able to receive messages.
+Note the address needs to have spent money in order to be able to send/receive messages to/from it. If you already have an address in your bitcoind wallet, you don't need to do the first step.
 
-    $ python
-    >>> from coinmessage import encrypt_message, decrypt_message
-    >>> payload = encrypt_message('1CC3X2gu58d6wXUWMffpuzN9JAfTUWu4Kj', 'secret message')
-    >>> print decrypt_message('5Kb8kLf9zgWQnogidDA76MzPL6TsZZY36hWXMssSzNydYXYB9KF', payload)
-    secret message
+    $ bitcoind importprivkey KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn
+    $ ./send 1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH "secret message"
+    AvxxqJiQ840M4/tmIVKFFwlxNRuzZDirbn20MqS3oCtTYUUZdsyWkTRCagab7NvUEl1U1DyK47dYHqkcThiPjdw=
+    $ ./receive 1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH AvxxqJiQ840M4/tmIVKFFwlxNRuzZDirbn20MqS3oCtTYUUZdsyWkTRCagab7NvUEl1U1DyK47dYHqkcThiPjdw=
 
 Dependencies
 ------------
@@ -46,4 +45,4 @@ MIT (see LICENSE file)
 Donations
 ---------
 
-To financially support this project you can donate to this Bitcoin address: 1MpUniid9rXvvg9ape9PpKvNVkb9a8btsM
+To financially support this project you can donate to this Bitcoin address: 15vNKVvD9PGrbCWvgwUDnQs1rk1YFkjLJT.
